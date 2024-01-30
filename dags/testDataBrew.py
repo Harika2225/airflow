@@ -7,7 +7,7 @@ from airflow.providers.amazon.aws.operators.glue_databrew import GlueDataBrewSta
 import boto3
 from airflow.providers.amazon.aws.hooks.base_aws import AwsBaseHook
 
-dag = DAG('testDataBrew_dag', start_date=datetime(2024,1,24))
+dag = DAG('testDataBrew_dag', start_date=datetime(2024,1,29))
 
 # Create a DataBrew client
 databrew_client = boto3.client('databrew')
@@ -16,11 +16,16 @@ databrew_client = boto3.client('databrew')
 def create_dataset():
     response = databrew_client.create_dataset(
         Name='my-dataset',
-        Format='CSV',
+        Format='JSON',
+        FormatOptions={
+            'Json': {
+                'MultiLine': True
+            },
+        },
         Input={
             'S3InputDefinition': {
                 'Bucket': 'databrewbuckettest',
-                'Key': 'data_big.csv'
+                'Key': 'persons_data.json'
             }
         }
     )
@@ -33,19 +38,38 @@ def create_recipe():
         Steps=[
             {
                 'Action': {
-                    'Operation': 'UPPER_CASE',
+                    'Operation': 'MOVE_TO_START',
                     'Parameters': {
-                        'sourceColumn': 'author',  # String parameter for the column to sort by
+                        'sourceColumn': 'name', 
                     }
                 },
             },
             {
                 'Action': {
-                    'Operation' : 'SORT',
+                    'Operation' : 'MOVE_AFTER',
                     'Parameters': {
-                        'expressions' : '[{"sourceColumn":"price","ordering":"ASCENDING","nullsOrdering":"NULLS_BOTTOM","customOrder":[]}]'
+                        'sourceColumn': 'phone',
+                        'targetColumn': 'name',
                     }
-    
+                }
+            },
+            {
+                'Action': {
+                    'Operation' : 'MOVE_TO_INDEX',
+                    'Parameters': {
+                        'sourceColumn': 'region',
+                        'targetIndex': '3',
+                    }
+                }
+            },
+            {
+                'Action': {
+                    'Operation' : 'MERGE',
+                    'Parameters': {
+                        'delimiter': ', ',
+                        'sourceColumns': '["region","country"]',
+                        'targetColumn': 'Area'
+                    }
                 }
             }
         ],
@@ -65,17 +89,22 @@ def create_job():
     response = databrew_client.create_recipe_job(
         Name='my-job',
         RoleArn = 'arn:aws:iam::379605592402:role/service-role/AWSGlueDataBrewServiceRole-test',
-        DatasetName='my-dataset',
         ProjectName='my-project',
-        RecipeReference={
-            'Name': 'my-recipe'
-        },
+        Outputs=[
+            {
+                'Location': {
+                    'Bucket': 'databrewbuckettest',
+                    'Key': 'outputtest.csv'
+                },
+                'Format':'CSV',
+            }
+        ]
     )
     print(f"Job created: {response['Name']}")
 
   
 def start_job():
-    response = databrew_client.start_job(Name='my-job')
+    response = databrew_client.start_job_run(Name='my-job')
     print(f"Job run started: {response['RunId']}")
 
 create_dataset_task = PythonOperator(
@@ -103,5 +132,4 @@ start_job_task = PythonOperator(
 start = DummyOperator(task_id='start', dag=dag)
 end = DummyOperator(task_id='end', dag=dag)
 
-# start >> create_dataset_task >> create_recipe_task >> create_project_task >> create_job_task >> start_job_task >> end
-start >> create_job_task >> start_job_task >> end
+start >> create_dataset_task >> create_recipe_task >> create_project_task >> create_job_task >> start_job_task >> end
